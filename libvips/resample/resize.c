@@ -237,13 +237,19 @@ vips_resize_build(VipsObject *object)
 		const char *nickname =
 			vips_resize_interpolate(resize->kernel);
 
-		/* Input displacement. For centre sampling, shift by 0.5 down
-		 * and right. Except if this is nearest, which is always
-		 * centre.
+		/* Input displacement to align output pixel centers with input.
+		 * Without this, output[0] samples from input[0], but arguably
+		 * output[0]'s center (0.5) should map to input position
+		 * 0.5/scale - 0.5, giving idx = 0.5 * (1 - 1/scale).
+		 * For nearest, no offset (samples at pixel center regardless).
+		 * For scale <= 1, offset is 0 (only verified for upscaling).
 		 */
-		const double id = resize->kernel == VIPS_KERNEL_NEAREST
+		const double hidx = resize->kernel == VIPS_KERNEL_NEAREST
 			? 0.0
-			: 0.5;
+			: VIPS_MAX(0.0, 0.5 * (1.0 - 1.0 / hscale));
+		const double vidy = resize->kernel == VIPS_KERNEL_NEAREST
+			? 0.0
+			: VIPS_MAX(0.0, 0.5 * (1.0 - 1.0 / vscale));
 
 		VipsInterpolate *interpolate;
 
@@ -267,8 +273,8 @@ vips_resize_build(VipsObject *object)
 			if (vips_affine(in, &t[4],
 					hscale, 0.0, 0.0, vscale,
 					"interpolate", interpolate,
-					"idx", id,
-					"idy", id,
+					"idx", hidx,
+					"idy", vidy,
 					"extend", VIPS_EXTEND_COPY,
 					"premultiplied", TRUE,
 					NULL))
@@ -279,8 +285,8 @@ vips_resize_build(VipsObject *object)
 			g_info("residual scale %g", hscale);
 			if (vips_affine(in, &t[4], hscale, 0.0, 0.0, 1.0,
 					"interpolate", interpolate,
-					"idx", id,
-					"idy", id,
+					"idx", hidx,
+					"idy", 0.0,
 					"extend", VIPS_EXTEND_COPY,
 					"premultiplied", TRUE,
 					NULL))
@@ -291,8 +297,8 @@ vips_resize_build(VipsObject *object)
 			g_info("residual scale %g", vscale);
 			if (vips_affine(in, &t[4], 1.0, 0.0, 0.0, vscale,
 					"interpolate", interpolate,
-					"idx", id,
-					"idy", id,
+					"idx", 0.0,
+					"idy", vidy,
 					"extend", VIPS_EXTEND_COPY,
 					"premultiplied", TRUE,
 					NULL))
