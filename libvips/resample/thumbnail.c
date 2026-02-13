@@ -124,6 +124,7 @@ typedef struct _VipsThumbnail {
 	char *input_profile;
 	VipsIntent intent;
 	VipsFailOn fail_on;
+	VipsKernel kernel;
 
 	/* Bits of info we read from the input image when we get the header of
 	 * the original.
@@ -895,7 +896,10 @@ vips_thumbnail_build(VipsObject *object)
 		in = t[3];
 	}
 
-	if (vips_resize(in, &t[5], 1.0 / hshrink, "vscale", 1.0 / vshrink, NULL))
+	if (vips_resize(in, &t[5], 1.0 / hshrink,
+			"vscale", 1.0 / vshrink,
+			"kernel", thumbnail->kernel,
+			NULL))
 		return -1;
 	in = t[5];
 
@@ -1251,6 +1255,13 @@ vips_thumbnail_class_init(VipsThumbnailClass *class)
 		G_STRUCT_OFFSET(VipsThumbnail, fail_on),
 		VIPS_TYPE_FAIL_ON, VIPS_FAIL_ON_NONE);
 
+	VIPS_ARG_ENUM(class, "kernel", 122,
+		_("Kernel"),
+		_("Resampling kernel"),
+		VIPS_ARGUMENT_OPTIONAL_INPUT,
+		G_STRUCT_OFFSET(VipsThumbnail, kernel),
+		VIPS_TYPE_KERNEL, VIPS_KERNEL_LANCZOS3);
+
 	/* BOOL args which default TRUE arguments don't work with the
 	 * command-line -- GOption does not allow --auto-rotate=false.
 	 *
@@ -1291,6 +1302,7 @@ vips_thumbnail_init(VipsThumbnail *thumbnail)
 	thumbnail->auto_rotate = TRUE;
 	thumbnail->intent = VIPS_INTENT_RELATIVE;
 	thumbnail->fail_on = VIPS_FAIL_ON_NONE;
+	thumbnail->kernel = VIPS_KERNEL_LANCZOS3;
 }
 
 typedef struct _VipsThumbnailFile {
@@ -1448,9 +1460,9 @@ vips_thumbnail_file_init(VipsThumbnailFile *file)
  *
  * Shrinking is done in three stages: using any
  * shrink-on-load features available in the image load library, using a block
- * shrink, and using a lanczos3 shrink. At least the final 200% is done with
- * lanczos3. The output should be high quality, and the operation should be
- * quick.
+ * shrink, and using a final shrink. At least the final 200% is done with
+ * the @kernel resampling filter (default lanczos3). The output should be high
+ * quality, and the operation should be quick.
  *
  * See [ctor@Image.thumbnail_buffer] to thumbnail from a memory buffer, or
  * [ctor@Image.thumbnail_source] to thumbnail from an arbitrary byte source.
@@ -1512,6 +1524,7 @@ vips_thumbnail_file_init(VipsThumbnailFile *file)
  *     * @output_profile: `gchararray`, output ICC profile
  *     * @intent: [enum@Intent], rendering intent
  *     * @fail_on: [enum@FailOn], load error types to fail on
+ *     * @kernel: [enum@Kernel], resampling kernel
  *
  * ::: seealso
  *     [ctor@Image.thumbnail_buffer].
@@ -1725,6 +1738,7 @@ vips_thumbnail_buffer_init(VipsThumbnailBuffer *buffer)
  *     * @output_profile: `gchararray`, output ICC profile
  *     * @intent: [enum@Intent], rendering intent
  *     * @fail_on: [enum@FailOn], load error types to fail on
+ *     * @kernel: [enum@Kernel], resampling kernel
  *     * @option_string: `gchararray`, extra loader options
  *
  * ::: seealso
@@ -1943,6 +1957,7 @@ vips_thumbnail_source_init(VipsThumbnailSource *source)
  *     * @output_profile: `gchararray`, output ICC profile
  *     * @intent: [enum@Intent], rendering intent
  *     * @fail_on: [enum@FailOn], load error types to fail on
+ *     * @kernel: [enum@Kernel], resampling kernel
  *     * @option_string: `gchararray`, extra loader options
  *
  * ::: seealso
@@ -2061,6 +2076,7 @@ vips_thumbnail_image_init(VipsThumbnailImage *image)
  *     * @output_profile: `gchararray`, output ICC profile
  *     * @intent: [enum@Intent], rendering intent
  *     * @fail_on: [enum@FailOn], load error types to fail on
+ *     * @kernel: [enum@Kernel], resampling kernel
  *
  * ::: seealso
  *     [ctor@Image.thumbnail].

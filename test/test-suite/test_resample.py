@@ -254,6 +254,39 @@ class TestResample:
             assert thumb.width < thumb.height
             assert thumb.height == 100
 
+    def test_thumbnail_kernel(self):
+        # test that the kernel option works
+        im = pyvips.Image.thumbnail(JPEG_FILE, 100, kernel="nearest")
+        assert im.height == 100
+
+        im = pyvips.Image.thumbnail(JPEG_FILE, 100, kernel="linear")
+        assert im.height == 100
+
+        im = pyvips.Image.thumbnail(JPEG_FILE, 100, kernel="cubic")
+        assert im.height == 100
+
+        im = pyvips.Image.thumbnail(JPEG_FILE, 100, kernel="lanczos2")
+        assert im.height == 100
+
+        im = pyvips.Image.thumbnail(JPEG_FILE, 100, kernel="lanczos3")
+        assert im.height == 100
+
+        # different kernels should produce different results
+        im_nearest = pyvips.Image.thumbnail(JPEG_FILE, 100, kernel="nearest")
+        im_lanczos3 = pyvips.Image.thumbnail(JPEG_FILE, 100, kernel="lanczos3")
+        assert (im_nearest - im_lanczos3).abs().max() > 0
+
+        # test that kernel works with thumbnail_buffer
+        with open(JPEG_FILE, 'rb') as f:
+            buf = f.read()
+        im_buf = pyvips.Image.thumbnail_buffer(buf, 100, kernel="cubic")
+        assert im_buf.height == 100
+
+        # test that kernel works with thumbnail_image
+        im_orig = pyvips.Image.new_from_file(JPEG_FILE)
+        im_thumb = im_orig.thumbnail_image(100, kernel="cubic")
+        assert im_thumb.height == 100
+
     def test_thumbnail_icc(self):
         im = pyvips.Image.thumbnail(JPEG_FILE_XYB, 442, output_profile="srgb")
 
