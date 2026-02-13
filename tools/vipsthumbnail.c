@@ -141,6 +141,7 @@ static gboolean crop_image = FALSE;
 static gboolean no_rotate_image = FALSE;
 static char *smartcrop_image = NULL;
 static char *thumbnail_intent = NULL;
+static char *thumbnail_kernel = NULL;
 static gboolean version = FALSE;
 
 /* Deprecated and unused.
@@ -181,6 +182,10 @@ static GOptionEntry options[] = {
 		G_OPTION_ARG_STRING, &thumbnail_intent,
 		N_("ICC transform with INTENT"),
 		N_("INTENT") },
+	{ "kernel", 'k', 0,
+		G_OPTION_ARG_STRING, &thumbnail_kernel,
+		N_("resample with KERNEL"),
+		N_("KERNEL") },
 	{ "delete", 'd', G_OPTION_FLAG_HIDDEN,
 		G_OPTION_ARG_NONE, &delete_profile,
 		N_("(deprecated, does nothing)"), NULL },
@@ -337,6 +342,7 @@ thumbnail_process(VipsObject *process, const char *name)
 	VipsInteresting interesting;
 	VipsImage *image;
 	VipsIntent intent;
+	VipsKernel kernel;
 	char filename[VIPS_PATH_MAX];
 	char option_string[VIPS_PATH_MAX];
 
@@ -362,6 +368,16 @@ thumbnail_process(VipsObject *process, const char *name)
 		intent = n;
 	}
 
+	kernel = VIPS_KERNEL_LANCZOS3;
+	if (thumbnail_kernel) {
+		int n;
+
+		if ((n = vips_enum_from_nick("vipsthumbnail",
+				 VIPS_TYPE_KERNEL, thumbnail_kernel)) < 0)
+			return -1;
+		kernel = n;
+	}
+
 	vips__filename_split8(name, filename, option_string);
 	if (strcmp(filename, "stdin") == 0) {
 		VipsSource *source;
@@ -380,6 +396,7 @@ thumbnail_process(VipsObject *process, const char *name)
 				"import-profile", input_profile,
 				"output-profile", output_profile,
 				"intent", intent,
+				"kernel", kernel,
 				NULL)) {
 			VIPS_UNREF(source);
 			return -1;
@@ -396,6 +413,7 @@ thumbnail_process(VipsObject *process, const char *name)
 				"import-profile", input_profile,
 				"output-profile", output_profile,
 				"intent", intent,
+				"kernel", kernel,
 				NULL))
 			return -1;
 	}

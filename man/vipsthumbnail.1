@@ -105,6 +105,17 @@ Auto-rotate images using EXIF orientation tags.
 .B -a, --linear
 Shrink images in linear light colour space. This can be much slower.
 
+.TP
+.B -k KERNEL, --kernel=KERNEL
+Resample with this kernel. The default is
+.B lanczos3.
+Other kernels include
+.B nearest,
+.B linear,
+.B cubic,
+and
+.B lanczos2.
+
 .SH RETURN VALUE
 returns 0 on success and non-zero on error. Error can mean one or more
 conversions failed.
