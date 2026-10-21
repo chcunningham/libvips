@@ -83,7 +83,7 @@ class TestResample:
         for fac in [1, 1.1, 1.5, 1.999]:
             for fmt in all_formats:
                 for kernel in ["nearest", "linear",
-                               "cubic", "lanczos2",
+                               "cubic", "mitchell", "lanczos2",
                                "lanczos3", "mks2013", "mks2021"]:
                     x = im.cast(fmt)
                     r = x.reduce(fac, fac, kernel=kernel)
@@ -94,7 +94,7 @@ class TestResample:
         for const in [0, 1, 2, 254, 255]:
             im = (pyvips.Image.black(10, 10) + const).cast("uchar")
             for kernel in ["nearest", "linear",
-                           "cubic", "lanczos2",
+                           "cubic", "mitchell", "lanczos2",
                            "lanczos3", "mks2013", "mks2021"]:
                 # print "testing kernel =", kernel
                 # print "testing const =", const
@@ -286,6 +286,129 @@ class TestResample:
         im_orig = pyvips.Image.new_from_file(JPEG_FILE)
         im_thumb = im_orig.thumbnail_image(100, kernel="cubic")
         assert im_thumb.height == 100
+
+    def test_resize_upsize_kernel(self):
+        im = pyvips.Image.new_from_file(JPEG_FILE)
+
+        for scale in [1.5, 2, 3.7]:
+            a = im.resize(scale, kernel="cubic")
+            b = im.resize(scale, kernel="mitchell")
+            assert a.width == b.width
+            assert a.height == b.height
+            assert (a - b).abs().max() > 0
+
+    def test_resize_upsize_fallback(self):
+        # there is no lanczos interpolator, so enlarging with lanczos3 falls
+        # back to bicubic ... this pins the current behaviour, it does not
+        # endorse it; delete this test when a lanczos interpolator arrives
+        im = pyvips.Image.new_from_file(JPEG_FILE)
+        a = im.resize(2, kernel="cubic")
+        b = im.resize(2, kernel="lanczos3")
+        assert (a - b).abs().max() == 0
+
+    def test_resize_upsize_constant(self):
+        # constant images must survive every format path ... compare
+        # against the cast image, since char clips 254 and 255 to 127
+        def check(im):
+            value = im.avg()
+            out = im.resize(2.5, kernel="mitchell")
+            assert out.width == 25
+            assert out.height == 25
+            if im.format in complex_formats:
+                assert abs(out.avg() - value) < 1e-9
+            elif im.format in float_formats:
+                assert abs(out.min() - value) < 1e-9
+                assert abs(out.max() - value) < 1e-9
+            else:
+                assert out.min() == value
+                assert out.max() == value
+
+        for const in [0, 1, 2, 254, 255]:
+            for fmt in all_formats:
+                check((pyvips.Image.black(10, 10) + const).cast(fmt))
+
+        # negative constants for the signed double-table paths ... char is
+        # left out: its fixed-point path floors negatives, for cubic too
+        for fmt, type_min in [("short", -32768), ("int", -2147483648)]:
+            for const in [-1, -2, -254, -255, type_min]:
+                check((pyvips.Image.black(10, 10) + const).cast(fmt))
+
+    def test_resize_upsize_reference(self):
+        # Mitchell-Netravali cubic filter
+        def cubic_filter(x, B, C):
+            ax = abs(x)
+            if ax <= 1:
+                return ((12 - 9 * B - 6 * C) * ax ** 3 +
+                        (-18 + 12 * B + 6 * C) * ax ** 2 +
+                        (6 - 2 * B)) / 6
+            if ax <= 2:
+                return ((-B - 6 * C) * ax ** 3 +
+                        (6 * B + 30 * C) * ax ** 2 +
+                        (-12 * B - 48 * C) * ax +
+                        (8 * B + 24 * C)) / 6
+            return 0.0
+
+        kernels = {"cubic": (0.0, 0.5), "mitchell": (1 / 3, 1 / 3)}
+        width = 11
+        impulse = 5
+
+        # double: table-free path, any scale, tight tolerance
+        for kernel, (B, C) in kernels.items():
+            for scale in [1.5, 2, 3.7]:
+                im = pyvips.Image.black(width, 1).cast("double")
+                im = im.draw_rect(1.0, impulse, 0, 1, 1)
+                out = im.resize(scale, vscale=1, kernel=kernel)
+                assert out.width == int(width * scale + 0.5)
+                for X in range(out.width):
+                    # centre convention: output pixel X samples input x
+                    x = (X + 0.5) / scale - 0.5
+                    if x - 2 < 0 or x + 2 > width - 1:
+                        continue
+                    expected = cubic_filter(x - impulse, B, C)
+                    assert abs(out(X, 0)[0] - expected) < 1e-9
+
+        # uchar: fixed-point path, offsets at scale 2 fall on the 1/64 table
+        # grid, values clip at 0 ... the observed error is 0, 1 is headroom
+        for kernel, (B, C) in kernels.items():
+            im = pyvips.Image.black(width, 1)
+            im = im.draw_rect(255, impulse, 0, 1, 1)
+            out = im.resize(2, vscale=1, kernel=kernel)
+            for X in range(out.width):
+                x = (X + 0.5) / 2 - 0.5
+                if x - 2 < 0 or x + 2 > width - 1:
+                    continue
+                expected = round(255 * cubic_filter(x - impulse, B, C))
+                expected = min(max(expected, 0), 255)
+                assert abs(out(X, 0)[0] - expected) <= 1
+
+    def test_resize_upsize_interpolate(self):
+        interpolate = pyvips.Interpolate.new("mitchell")
+        im = (pyvips.Image.black(10, 10) + 128).cast("uchar")
+        out = im.affine([2, 0, 0, 2], interpolate=interpolate,
+                        extend="copy")
+        assert out.width == 20
+        assert out.height == 20
+        assert out.min() == 128
+        assert out.max() == 128
+
+    def test_thumbnail_upsize_kernel(self):
+        im = pyvips.Image.new_from_file(JPEG_FILE)
+        width = 2 * im.width
+        height = 2 * im.height
+
+        # thumbnail output is sequential, and t1 is read twice
+        t1 = pyvips.Image.thumbnail(JPEG_FILE, width, height=height,
+                                    size="up", kernel="mitchell")
+        t1 = t1.copy_memory()
+        t2 = pyvips.Image.thumbnail(JPEG_FILE, width, height=height,
+                                    size="up", kernel="cubic")
+        assert t1.width == width
+        assert t2.width == width
+        assert (t1 - t2).abs().max() > 0
+
+        # thumbnail enlarges with resize, so the two must agree
+        r = im.resize(2, kernel="mitchell")
+        assert (t1 - r).abs().max() == 0
 
     def test_thumbnail_icc(self):
         im = pyvips.Image.thumbnail(JPEG_FILE_XYB, 442, output_profile="srgb")

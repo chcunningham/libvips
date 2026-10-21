@@ -123,8 +123,12 @@ vips_resize_interpolate(VipsKernel kernel)
 	case VIPS_KERNEL_LINEAR:
 		return "bilinear";
 
-	/* Use cubic for everything else. There are other interpolators, like
-	 * nohalo, but they don't really correspond well to any kernel.
+	case VIPS_KERNEL_MITCHELL:
+		return "mitchell";
+
+	/* Use cubic for everything else. There is no interpolator for the
+	 * lanczos or mks kernels, and the other interpolators, like nohalo,
+	 * don't really correspond well to any kernel.
 	 */
 	default:
 		return "bicubic";
@@ -266,7 +270,8 @@ vips_resize_build(VipsObject *object)
 		}
 		else if (hscale > 1.0 &&
 			vscale > 1.0) {
-			g_info("residual scale %g x %g", hscale, vscale);
+			g_info("residual scale %g x %g with %s",
+				hscale, vscale, nickname);
 			if (vips_affine(in, &t[4],
 					hscale, 0.0, 0.0, vscale,
 					"interpolate", interpolate,
@@ -279,7 +284,7 @@ vips_resize_build(VipsObject *object)
 			in = t[4];
 		}
 		else if (hscale > 1.0) {
-			g_info("residual scale %g", hscale);
+			g_info("residual scale %g with %s", hscale, nickname);
 			if (vips_affine(in, &t[4], hscale, 0.0, 0.0, 1.0,
 					"interpolate", interpolate,
 					"idx", idx,
@@ -291,7 +296,7 @@ vips_resize_build(VipsObject *object)
 			in = t[4];
 		}
 		else {
-			g_info("residual scale %g", vscale);
+			g_info("residual scale %g with %s", vscale, nickname);
 			if (vips_affine(in, &t[4], 1.0, 0.0, 0.0, vscale,
 					"interpolate", interpolate,
 					"idx", idx,
@@ -419,9 +424,10 @@ vips_resize_init(VipsResize *resize)
  *
  * When upsizing (@scale > 1), the operation uses [method@Image.affine] with
  * a [class@Interpolate] selected depending on @kernel. It will use
- * [class@Interpolate] "bicubic" for [enum@Vips.Kernel.CUBIC] and above. It
- * adds a 0.5 pixel displacement to the input pixels to get centre convention
- * scaling.
+ * [class@Interpolate] "bicubic" for [enum@Vips.Kernel.CUBIC] and "mitchell"
+ * for [enum@Vips.Kernel.MITCHELL]. The other kernels have no interpolator
+ * and fall back to "bicubic". It adds a 0.5 pixel displacement to the input
+ * pixels to get centre convention scaling.
  *
  * [method@Image.resize] normally maintains the image aspect ratio. If you set
  * @vscale, that factor is used for the vertical scale and @scale for the
