@@ -1,9 +1,11 @@
-/* bicubic (catmull-rom) interpolator
+/* bicubic (catmull-rom) and mitchell interpolators
  *
  * 12/8/10
  * 	- revise window_size / window_offset stuff again
  * 7/2/16
  * 	- double intermediate for 32-bit int types
+ * 21/10/26
+ * 	- add the mitchell interpolator, sharing the bicubic code
  */
 
 /*
@@ -48,6 +50,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cmath>
 
 #include <vips/vips.h>
 #include <vips/internal.h>
@@ -74,22 +77,73 @@ typedef VipsInterpolate VipsInterpolateBicubic;
 
 typedef VipsInterpolateClass VipsInterpolateBicubicClass;
 
+typedef VipsInterpolate VipsInterpolateMitchell;
+
+typedef VipsInterpolateClass VipsInterpolateMitchellClass;
+
 /* Precalculated interpolation matrices. int (used for pel
  * sizes up to short), and double (for all others). We go to
  * scale + 1 so we can round-to-nearest safely.
+ *
+ * Each cubic variant is a struct holding its own tables and the function
+ * that computes its coefficients. The interpolate body below is templated
+ * over this, so Catmull-Rom and Mitchell share one implementation.
  */
 
 /* We could keep a large set of 2d 4x4 matrices, but this actually
  * works out slower since for many resizes the thing will no longer
  * fit in L1.
  */
-static int vips_bicubic_matrixi[VIPS_TRANSFORM_SCALE + 1][4];
-static double vips_bicubic_matrixf[VIPS_TRANSFORM_SCALE + 1][4];
+struct CatmullRom {
+	static int matrixi[VIPS_TRANSFORM_SCALE + 1][4];
+	static double matrixf[VIPS_TRANSFORM_SCALE + 1][4];
+
+	static void inline calculate_coefficients(double c[4], const double x)
+	{
+		calculate_coefficients_catmull(c, x);
+	}
+
+	/* The 16 and 32-bit int paths compute in double and have always
+	 * truncated on output. Catmull-Rom table coefficients are dyadic, so
+	 * sums of integer products are exact and constants survive. Truncation
+	 * is kept here only so bicubic output stays unchanged.
+	 */
+	static double inline to_int(double v)
+	{
+		return v;
+	}
+};
+
+int CatmullRom::matrixi[VIPS_TRANSFORM_SCALE + 1][4];
+double CatmullRom::matrixf[VIPS_TRANSFORM_SCALE + 1][4];
+
+struct Mitchell {
+	static int matrixi[VIPS_TRANSFORM_SCALE + 1][4];
+	static double matrixf[VIPS_TRANSFORM_SCALE + 1][4];
+
+	static void inline calculate_coefficients(double c[4], const double x)
+	{
+		calculate_coefficients_mitchell(c, x);
+	}
+
+	/* Mitchell coefficients are not dyadic, so a constant image comes
+	 * back a hair under the constant; round rather than truncate.
+	 */
+	static double inline to_int(double v)
+	{
+		return rint(v);
+	}
+};
+
+int Mitchell::matrixi[VIPS_TRANSFORM_SCALE + 1][4];
+double Mitchell::matrixf[VIPS_TRANSFORM_SCALE + 1][4];
 
 /* We need C linkage for this.
  */
 extern "C" {
 G_DEFINE_TYPE(VipsInterpolateBicubic, vips_interpolate_bicubic,
+	VIPS_TYPE_INTERPOLATE);
+G_DEFINE_TYPE(VipsInterpolateMitchell, vips_interpolate_mitchell,
 	VIPS_TYPE_INTERPOLATE);
 }
 
@@ -292,7 +346,7 @@ static void inline bicubic_float_tab(void *pout, const VipsPel *pin,
 /* uint32 version needs a double intermediate.
  */
 
-template <typename T, int max_value>
+template <typename T, int max_value, typename Cubic>
 static void inline bicubic_unsigned_int32_tab(void *pout, const VipsPel *pin,
 	const int bands, const int lskip,
 	const double *cx, const double *cy)
@@ -348,13 +402,13 @@ static void inline bicubic_unsigned_int32_tab(void *pout, const VipsPel *pin,
 
 		bicubic = VIPS_CLIP(0, bicubic, max_value);
 
-		out[z] = bicubic;
+		out[z] = Cubic::to_int(bicubic);
 
 		in += 1;
 	}
 }
 
-template <typename T, int min_value, int max_value>
+template <typename T, int min_value, int max_value, typename Cubic>
 static void inline bicubic_signed_int32_tab(void *pout, const VipsPel *pin,
 	const int bands, const int lskip,
 	const double *cx, const double *cy)
@@ -410,7 +464,7 @@ static void inline bicubic_signed_int32_tab(void *pout, const VipsPel *pin,
 
 		bicubic = VIPS_CLIP(min_value, bicubic, max_value);
 
-		out[z] = bicubic;
+		out[z] = Cubic::to_int(bicubic);
 
 		in += 1;
 	}
@@ -418,7 +472,7 @@ static void inline bicubic_signed_int32_tab(void *pout, const VipsPel *pin,
 
 /* Ultra-high-quality version for double images.
  */
-template <typename T>
+template <typename T, typename Cubic>
 static void inline bicubic_notab(void *pout, const VipsPel *pin,
 	const int bands, const int lskip,
 	double x, double y)
@@ -447,8 +501,8 @@ static void inline bicubic_notab(void *pout, const VipsPel *pin,
 	double cx[4];
 	double cy[4];
 
-	calculate_coefficients_catmull(cx, x);
-	calculate_coefficients_catmull(cy, y);
+	Cubic::calculate_coefficients(cx, x);
+	Cubic::calculate_coefficients(cy, y);
 
 	for (int z = 0; z < bands; z++) {
 		const T uno_one = in[0];
@@ -484,9 +538,9 @@ static void inline bicubic_notab(void *pout, const VipsPel *pin,
 	}
 }
 
-static void
-vips_interpolate_bicubic_interpolate(VipsInterpolate *interpolate,
-	void *out, VipsRegion *in, double x, double y)
+template <typename Cubic>
+static void inline cubic_interpolate(void *out, VipsRegion *in,
+	double x, double y)
 {
 	/* Find the mask index. We round-to-nearest, so we need to generate
 	 * indexes in 0 to VIPS_TRANSFORM_SCALE, 2^n + 1 values. We multiply
@@ -513,10 +567,10 @@ vips_interpolate_bicubic_interpolate(VipsInterpolate *interpolate,
 
 	/* Look up the tables we need.
 	 */
-	const int *cxi = vips_bicubic_matrixi[tx];
-	const int *cyi = vips_bicubic_matrixi[ty];
-	const double *cxf = vips_bicubic_matrixf[tx];
-	const double *cyf = vips_bicubic_matrixf[ty];
+	const int *cxi = Cubic::matrixi[tx];
+	const int *cyi = Cubic::matrixi[ty];
+	const double *cxf = Cubic::matrixf[tx];
+	const double *cyf = Cubic::matrixf[ty];
 
 	/* Pel size and line size.
 	 */
@@ -535,7 +589,7 @@ vips_interpolate_bicubic_interpolate(VipsInterpolate *interpolate,
 	g_assert(iy + 2 < VIPS_RECT_BOTTOM(&in->valid));
 
 #ifdef DEBUG
-	printf("vips_interpolate_bicubic_interpolate: %g %g\n", x, y);
+	printf("cubic_interpolate: %g %g\n", x, y);
 	printf("\tleft=%d, top=%d, width=%d, height=%d\n",
 		ix - 1, iy - 1, 4, 4);
 	printf("\tmaskx=%d, masky=%d\n", tx, ty);
@@ -555,7 +609,7 @@ vips_interpolate_bicubic_interpolate(VipsInterpolate *interpolate,
 				out, p, bands, lskip,
 				cxf, cyf );
 
-			bicubic_notab<unsigned char>(
+			bicubic_notab<unsigned char, Cubic>(
 				out, p, bands, lskip,
 				x - ix, y - iy );
 
@@ -570,25 +624,25 @@ vips_interpolate_bicubic_interpolate(VipsInterpolate *interpolate,
 		break;
 
 	case VIPS_FORMAT_USHORT:
-		bicubic_unsigned_int32_tab<unsigned short, USHRT_MAX>(
+		bicubic_unsigned_int32_tab<unsigned short, USHRT_MAX, Cubic>(
 			out, p, bands, lskip,
 			cxf, cyf);
 		break;
 
 	case VIPS_FORMAT_SHORT:
-		bicubic_signed_int32_tab<signed short, SHRT_MIN, SHRT_MAX>(
+		bicubic_signed_int32_tab<signed short, SHRT_MIN, SHRT_MAX, Cubic>(
 			out, p, bands, lskip,
 			cxf, cyf);
 		break;
 
 	case VIPS_FORMAT_UINT:
-		bicubic_unsigned_int32_tab<unsigned int, INT_MAX>(
+		bicubic_unsigned_int32_tab<unsigned int, INT_MAX, Cubic>(
 			out, p, bands, lskip,
 			cxf, cyf);
 		break;
 
 	case VIPS_FORMAT_INT:
-		bicubic_signed_int32_tab<signed int, INT_MIN, INT_MAX>(
+		bicubic_signed_int32_tab<signed int, INT_MIN, INT_MAX, Cubic>(
 			out, p, bands, lskip,
 			cxf, cyf);
 		break;
@@ -599,7 +653,7 @@ vips_interpolate_bicubic_interpolate(VipsInterpolate *interpolate,
 		break;
 
 	case VIPS_FORMAT_DOUBLE:
-		bicubic_notab<double>(out, p, bands, lskip,
+		bicubic_notab<double, Cubic>(out, p, bands, lskip,
 			x - ix, y - iy);
 		break;
 
@@ -609,13 +663,37 @@ vips_interpolate_bicubic_interpolate(VipsInterpolate *interpolate,
 		break;
 
 	case VIPS_FORMAT_DPCOMPLEX:
-		bicubic_notab<double>(out, p, bands * 2, lskip,
+		bicubic_notab<double, Cubic>(out, p, bands * 2, lskip,
 			x - ix, y - iy);
 		break;
 
 	default:
 		break;
 	}
+}
+
+/* Build the tables of pre-computed coefficients.
+ */
+template <typename Cubic>
+static void
+cubic_build_tables()
+{
+	for (int x = 0; x < VIPS_TRANSFORM_SCALE + 1; x++) {
+		Cubic::calculate_coefficients(Cubic::matrixf[x],
+			(float) x / VIPS_TRANSFORM_SCALE);
+
+		for (int i = 0; i < 4; i++)
+			Cubic::matrixi[x][i] =
+				Cubic::matrixf[x][i] *
+				VIPS_INTERPOLATE_SCALE;
+	}
+}
+
+static void
+vips_interpolate_bicubic_interpolate(VipsInterpolate *interpolate,
+	void *out, VipsRegion *in, double x, double y)
+{
+	cubic_interpolate<CatmullRom>(out, in, x, y);
 }
 
 static void
@@ -631,17 +709,7 @@ vips_interpolate_bicubic_class_init(VipsInterpolateBicubicClass *iclass)
 	interpolate_class->interpolate = vips_interpolate_bicubic_interpolate;
 	interpolate_class->window_size = 4;
 
-	/* Build the tables of pre-computed coefficients.
-	 */
-	for (int x = 0; x < VIPS_TRANSFORM_SCALE + 1; x++) {
-		calculate_coefficients_catmull(vips_bicubic_matrixf[x],
-			(float) x / VIPS_TRANSFORM_SCALE);
-
-		for (int i = 0; i < 4; i++)
-			vips_bicubic_matrixi[x][i] =
-				vips_bicubic_matrixf[x][i] *
-				VIPS_INTERPOLATE_SCALE;
-	}
+	cubic_build_tables<CatmullRom>();
 }
 
 static void
@@ -650,5 +718,38 @@ vips_interpolate_bicubic_init(VipsInterpolateBicubic *bicubic)
 #ifdef DEBUG
 	printf("vips_interpolate_bicubic_init: ");
 	vips_object_print_dump(VIPS_OBJECT(bicubic));
+#endif /*DEBUG*/
+}
+
+static void
+vips_interpolate_mitchell_interpolate(VipsInterpolate *interpolate,
+	void *out, VipsRegion *in, double x, double y)
+{
+	cubic_interpolate<Mitchell>(out, in, x, y);
+}
+
+static void
+vips_interpolate_mitchell_class_init(VipsInterpolateMitchellClass *iclass)
+{
+	VipsObjectClass *object_class = VIPS_OBJECT_CLASS(iclass);
+	VipsInterpolateClass *interpolate_class =
+		VIPS_INTERPOLATE_CLASS(iclass);
+
+	object_class->nickname = "mitchell";
+	object_class->description =
+		_("bicubic interpolation (Mitchell-Netravali)");
+
+	interpolate_class->interpolate = vips_interpolate_mitchell_interpolate;
+	interpolate_class->window_size = 4;
+
+	cubic_build_tables<Mitchell>();
+}
+
+static void
+vips_interpolate_mitchell_init(VipsInterpolateMitchell *mitchell)
+{
+#ifdef DEBUG
+	printf("vips_interpolate_mitchell_init: ");
+	vips_object_print_dump(VIPS_OBJECT(mitchell));
 #endif /*DEBUG*/
 }

@@ -472,6 +472,15 @@ calculate_coefficients(T *c, const int n_points,
 		c[i] /= sum;
 }
 
+/* Mitchell-Netravali coefficients for an offset in [0,1], in the same
+ * layout as calculate_coefficients_catmull(). Shares the filter and the
+ * normalisation with the reduce path.
+ */
+static void inline calculate_coefficients_mitchell(double c[4], const double x)
+{
+	calculate_coefficients(c, 4, filter<VIPS_KERNEL_MITCHELL>, 1.0, x);
+}
+
 /* Calculate a mask element.
  */
 template <typename T>
